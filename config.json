@@ -1,0 +1,18 @@
+{
+  "input": {
+    "driver": "json",
+    "path": "data/gdp_with_continent_filled.json"
+  },
+  "output": {
+    "driver": "graphics",
+    "options": {}
+  },
+  "parameters": {
+    "continent": "Asia",
+    "year": 2020,
+    "start_year": 2000,
+    "end_year": 2020,
+    "decline_years": 3
+  }
+}
+
