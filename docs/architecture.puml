@@ -1,0 +1,76 @@
+@startuml SDA_Phase_2
+
+title SDA Project Phase 2 - Modular Orchestration & Dependency Inversion
+
+package "core" {
+  interface DataSink {
+    +write(records: List[dict]): None
+  }
+
+  interface PipelineService {
+    +execute(raw_data: List[Any]): None
+  }
+
+  class EngineConfig {
+    +continent: str
+    +year: int
+    +start_year: int
+    +end_year: int
+    +decline_years: int
+  }
+
+  class TransformationEngine {
+    -sink: DataSink
+    -config: EngineConfig
+    +execute(raw_data: List[Any]): None
+  }
+
+  PipelineService <|.. TransformationEngine
+  TransformationEngine --> DataSink : uses
+}
+
+package "plugins.inputs" {
+  class JsonReader {
+    -path: str
+    -service: PipelineService
+    +run(): None
+  }
+
+  class CsvReader {
+    -path: str
+    -service: PipelineService
+    +run(): None
+  }
+
+  JsonReader --> PipelineService : calls
+  CsvReader --> PipelineService : calls
+}
+
+package "plugins.outputs" {
+  class ConsoleWriter {
+    +write(records: List[dict]): None
+  }
+
+  class GraphicsChartWriter {
+    -output_dir: str
+    +write(records: List[dict]): None
+  }
+
+  DataSink <|.. ConsoleWriter
+  DataSink <|.. GraphicsChartWriter
+}
+
+package "main" {
+  class MainModule {
+    +bootstrap(config_path: str): None
+  }
+}
+
+MainModule --> JsonReader : creates
+MainModule --> CsvReader : creates
+MainModule --> ConsoleWriter : creates
+MainModule --> GraphicsChartWriter : creates
+MainModule --> TransformationEngine : creates & wires
+
+@enduml
+
