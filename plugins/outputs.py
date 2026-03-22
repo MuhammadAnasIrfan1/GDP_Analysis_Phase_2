@@ -1,220 +1,267 @@
-from __future__ import annotations
+"""
+plugins/outputs.py — The Output Plugin (Real-Time Dashboard)
 
-from pathlib import Path
-from typing import Any, Dict, List
+Phase 3 changes from Phase 2:
+  - No longer receives a full dataset at once.
+  - Runs as a process, pulling packets from the output_queue one at a time.
+  - Renders two real-time line charts (live values + running average).
+  - Displays pipeline telemetry (queue fill levels) with color-coded warnings.
 
-from core.contracts import DataSink, Record
+Observer Pattern:
+  - PipelineTelemetry is the Subject — it polls queue sizes independently.
+  - RealtimeDashboard is the Observer — it subscribes to the telemetry object
+    and updates its display based on what the telemetry reports.
+
+The dashboard knows nothing about sensor data or GDP data.
+It reads chart config from config.json and renders whatever it finds there.
+"""
+
+import multiprocessing
+import time
+import matplotlib
+
+# The dashboard prefers the TkAgg backend for an interactive window.  However
+# the virtualenv used by this project doesn't package tkinter, and many Linux
+# distributions require an extra system package (e.g. python3-tk) to enable it.
+# When tkinter is missing attempting to use TkAgg will raise ImportError.  To
+# make the module importable in environments where installing tk isn't
+# possible (CI, headless servers, etc) we try to select TkAgg and fall back to
+# a non‑interactive backend if that fails.
+try:
+    import tkinter  # pragma: no cover - optional dependency
+except ImportError:  # tkinter not available
+    print("[outputs] tkinter not found, falling back to non-interactive backend")
+    matplotlib.use("Agg")
+else:
+    matplotlib.use("TkAgg")          # Use TkAgg so the window stays interactive
+
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from collections import deque
+from typing import Any
 
 
-class ConsoleWriter(DataSink):
+# ── Observer Pattern: Subject (Telemetry Monitor) ─────────────────────────────
+
+class PipelineTelemetry:
     """
-    Simple sink that prints results to the console in a human-readable form.
-    """
+    The Subject in the Observer pattern.
+    
+    Holds references to both queues and lets anyone ask for the current
+    fill level without touching the queues directly.
 
-    def write(self, records: List[Record]) -> None:
-        for record in records:
-            metric = record.get("metric", "unknown")
-            print(f"\n=== {metric.replace('_', ' ').upper()} ===")
-            self._print_metric(record)
-
-    def _print_metric(self, record: Dict[str, Any]) -> None:
-        metric = record.get("metric")
-        if metric in {
-            "top_10_countries_by_gdp",
-            "bottom_10_countries_by_gdp",
-        }:
-            countries = record.get("countries", [])
-            for idx, item in enumerate(countries, start=1):
-                country = item.get("country")
-                gdp = item.get("gdp")
-                print(f"{idx:2d}. {country:40s} {gdp:,.0f}")
-        elif metric == "gdp_growth_by_country":
-            for item in record.get("countries", []):
-                country = item.get("country")
-                growth = item.get("growth_rate", 0.0) * 100.0
-                print(f"{country:40s} {growth:8.2f}%")
-        elif metric == "average_gdp_by_continent":
-            for item in record.get("continents", []):
-                name = item.get("continent")
-                avg = item.get("average_gdp", 0.0)
-                print(f"{name:20s} {avg:,.0f}")
-        elif metric == "global_gdp_trend":
-            for point in record.get("trend", []):
-                year = point.get("year")
-                total = point.get("global_gdp", 0.0)
-                print(f"{year}: {total:,.0f}")
-        elif metric == "fastest_growing_continent":
-            fastest = record.get("result")
-            if not fastest:
-                print("No data available.")
-                return
-            name = fastest.get("continent")
-            growth = fastest.get("growth_rate", 0.0) * 100.0
-            print(f"{name} ({growth:.2f}% growth)")
-        elif metric == "consistent_gdp_decline":
-            years = record.get("years", [])
-            print(f"Years window: {years}")
-            for item in record.get("countries", []):
-                country = item.get("country")
-                print(f"- {country}")
-        elif metric == "continent_contribution_to_global_gdp":
-            for item in record.get("continents", []):
-                name = item.get("continent")
-                share = item.get("share_of_global_gdp", 0.0) * 100.0
-                print(f"{name:20s} {share:6.2f}%")
-        else:
-            # Fallback: just pretty-print the dict.
-            for key, value in record.items():
-                print(f"{key}: {value}")
-
-
-class GraphicsChartWriter(DataSink):
-    """
-    Sink that generates simple chart images for selected metrics.
-
-    Uses matplotlib if available; otherwise, it degrades gracefully by
-    emitting a message and skipping chart generation.
+    main.py passes the queue references here. The dashboard subscribes to
+    this object to get live stats — it never touches the queues directly.
+    This keeps the Output module decoupled from the queuing mechanism.
     """
 
-    def __init__(self, output_dir: str = "charts") -> None:
-        self._output_dir = Path(output_dir)
-        self._output_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, raw_queue: multiprocessing.Queue,
+                 processed_queue: multiprocessing.Queue,
+                 output_queue: multiprocessing.Queue,
+                 max_size: int):
+        self._raw_queue = raw_queue
+        self._processed_queue = processed_queue
+        self._output_queue = output_queue
+        self.max_size = max_size
 
-    def write(self, records: List[Record]) -> None:
-        try:
-            import matplotlib.pyplot as plt  # type: ignore[import]
-        except Exception:  # pragma: no cover - optional dependency
-            print(
-                "matplotlib is not available; GraphicsChartWriter "
-                "will not generate charts."
-            )
-            return
+        # List of observers that want to be notified of updates
+        self._observers = []
 
-        for record in records:
-            metric = record.get("metric")
-            if metric == "global_gdp_trend":
-                self._plot_global_trend(record, plt)
-            elif metric == "continent_contribution_to_global_gdp":
-                self._plot_continent_contribution(record, plt)
-            elif metric in {
-                "top_10_countries_by_gdp",
-                "bottom_10_countries_by_gdp",
-            }:
-                self._plot_top_bottom(record, plt)
-            elif metric == "gdp_growth_by_country":
-                self._plot_growth_by_country(record, plt)
-            elif metric == "average_gdp_by_continent":
-                self._plot_average_gdp_by_continent(record, plt)
-            elif metric == "fastest_growing_continent":
-                self._plot_fastest_growing_continent(record, plt)
+    def subscribe(self, observer) -> None:
+        """Register an observer (the dashboard) to receive telemetry updates."""
+        self._observers.append(observer)
 
-    def _plot_global_trend(self, record: Dict[str, Any], plt: Any) -> None:
-        trend = record.get("trend", [])
-        if not trend:
-            return
-        years = [point["year"] for point in trend]
-        totals = [point["global_gdp"] for point in trend]
-        fig, ax = plt.subplots()
-        ax.plot(years, totals, marker="o")
-        ax.set_title("Global GDP Trend")
-        ax.set_xlabel("Year")
-        ax.set_ylabel("GDP (current US$)")
-        fig.tight_layout()
-        path = self._output_dir / "global_gdp_trend.png"
-        fig.savefig(path)
-        plt.close(fig)
-        print(f"Saved chart: {path}")
+    def get_stats(self) -> dict:
+        """
+        Snapshot of current queue states.
+        Returns fill percentages and color codes.
+        
+        Color logic:
+          Green  = under 50% full  → pipeline is flowing smoothly
+          Yellow = 50–80% full     → starting to back up, watch it
+          Red    = over 80% full   → heavy backpressure, input is faster than core
+        """
+        def fill_pct(q):
+            try:
+                size = q.qsize()
+            except NotImplementedError:
+                size = 0  # macOS doesn't support qsize() — fallback to 0
+            pct = min((size / self.max_size) * 100, 100)
+            return size, pct
 
-    def _plot_continent_contribution(self, record: Dict[str, Any], plt: Any) -> None:
-        continents = record.get("continents", [])
-        if not continents:
-            return
-        labels = [item["continent"] for item in continents]
-        shares = [item["share_of_global_gdp"] for item in continents]
-        fig, ax = plt.subplots()
-        ax.bar(labels, shares)
-        ax.set_title("Continent Contribution to Global GDP")
-        ax.set_ylabel("Share of Global GDP")
-        ax.set_xticks(range(len(labels)))
-        ax.set_xticklabels(labels, rotation=45, ha="right")
-        fig.tight_layout()
-        path = self._output_dir / "continent_contribution.png"
-        fig.savefig(path)
-        plt.close(fig)
-        print(f"Saved chart: {path}")
+        raw_size, raw_pct         = fill_pct(self._raw_queue)
+        proc_size, proc_pct       = fill_pct(self._processed_queue)
+        out_size, out_pct         = fill_pct(self._output_queue)
 
-    def _plot_top_bottom(self, record: Dict[str, Any], plt: Any) -> None:
-        countries = record.get("countries", [])
-        if not countries:
-            return
-        labels = [c["country"] for c in countries]
-        values = [c["gdp"] for c in countries]
-        fig, ax = plt.subplots()
-        ax.bar(range(len(labels)), values)
-        ax.set_title(record.get("metric", "").replace("_", " ").title())
-        ax.set_ylabel("GDP (current US$)")
-        ax.set_xticks(range(len(labels)))
-        ax.set_xticklabels(labels, rotation=45, ha="right")
-        fig.tight_layout()
-        filename = f"{record.get('metric', 'top_bottom')}.png"
-        path = self._output_dir / filename
-        fig.savefig(path)
-        plt.close(fig)
-        print(f"Saved chart: {path}")
+        def color(pct):
+            if pct >= 80: return "red"
+            if pct >= 50: return "yellow"
+            return "green"
 
-    def _plot_growth_by_country(self, record: Dict[str, Any], plt: Any) -> None:
-        countries = record.get("countries", [])
-        if not countries:
-            return
-        labels = [c["country"] for c in countries]
-        values = [c["growth_rate"] * 100.0 for c in countries]
-        fig, ax = plt.subplots()
-        ax.bar(range(len(labels)), values)
-        ax.set_title("GDP Growth Rate by Country")
-        ax.set_ylabel("Growth rate (%)")
-        ax.set_xticks(range(len(labels)))
-        ax.set_xticklabels(labels, rotation=90, ha="right")
-        fig.tight_layout()
-        path = self._output_dir / "gdp_growth_by_country.png"
-        fig.savefig(path)
-        plt.close(fig)
-        print(f"Saved chart: {path}")
+        return {
+            "raw":         {"size": raw_size,   "pct": raw_pct,   "color": color(raw_pct)},
+            "intermediate":{"size": proc_size,  "pct": proc_pct,  "color": color(proc_pct)},
+            "processed":   {"size": out_size,   "pct": out_pct,   "color": color(out_pct)},
+        }
 
-    def _plot_average_gdp_by_continent(
-        self, record: Dict[str, Any], plt: Any
-    ) -> None:
-        continents = record.get("continents", [])
-        if not continents:
-            return
-        labels = [c["continent"] for c in continents]
-        values = [c["average_gdp"] for c in continents]
-        fig, ax = plt.subplots()
-        ax.bar(range(len(labels)), values)
-        ax.set_title("Average GDP by Continent")
-        ax.set_ylabel("Average GDP (current US$)")
-        ax.set_xticks(range(len(labels)))
-        ax.set_xticklabels(labels, rotation=45, ha="right")
-        fig.tight_layout()
-        path = self._output_dir / "average_gdp_by_continent.png"
-        fig.savefig(path)
-        plt.close(fig)
-        print(f"Saved chart: {path}")
+    def notify_observers(self) -> None:
+        """Push the latest stats to all subscribed observers."""
+        stats = self.get_stats()
+        for observer in self._observers:
+            observer.on_telemetry_update(stats)
 
-    def _plot_fastest_growing_continent(
-        self, record: Dict[str, Any], plt: Any
-    ) -> None:
-        fastest = record.get("result")
-        if not fastest:
-            return
-        label = fastest.get("continent")
-        value = fastest.get("growth_rate", 0.0) * 100.0
-        fig, ax = plt.subplots()
-        ax.bar([label], [value])
-        ax.set_title("Fastest Growing Continent")
-        ax.set_ylabel("Growth rate (%)")
-        fig.tight_layout()
-        path = self._output_dir / "fastest_growing_continent.png"
-        fig.savefig(path)
-        plt.close(fig)
-        print(f"Saved chart: {path}")
 
+# ── Observer Pattern: Observer (Real-Time Dashboard) ─────────────────────────
+
+class RealtimeDashboard:
+    """
+    The Observer in the Observer pattern.
+    
+    Subscribes to PipelineTelemetry and redraws whenever it gets an update.
+    Also reads from the output_queue to plot live sensor data.
+
+    Layout:
+      Row 1: Queue telemetry bars (3 progress bars, color-coded)
+      Row 2: Live values chart   (from data_charts[0])
+      Row 3: Running average chart (from data_charts[1])
+    """
+
+    SENTINEL = None
+
+    def __init__(self, output_queue: multiprocessing.Queue,
+                 telemetry: PipelineTelemetry, config: dict):
+        self.output_queue = output_queue
+        self.telemetry = telemetry
+
+        # Subscribe ourselves to the telemetry subject
+        telemetry.subscribe(self)
+
+        # Read chart config so the dashboard is generic
+        charts_cfg = config["visualizations"]["data_charts"]
+        telemetry_cfg = config["visualizations"]["telemetry"]
+        self.max_size = config["pipeline_dynamics"]["stream_queue_max_size"]
+
+        self.show_raw         = telemetry_cfg.get("show_raw_stream", True)
+        self.show_intermediate= telemetry_cfg.get("show_intermediate_stream", True)
+        self.show_processed   = telemetry_cfg.get("show_processed_stream", True)
+
+        # Data buffers for the charts (rolling window of last 100 points)
+        self.x_values   = deque(maxlen=100)
+        self.y_values   = deque(maxlen=100)
+        self.y_averages = deque(maxlen=100)
+
+        # Chart titles and axis labels come from config — completely generic
+        self.chart1_cfg = charts_cfg[0] if len(charts_cfg) > 0 else {}
+        self.chart2_cfg = charts_cfg[1] if len(charts_cfg) > 1 else {}
+
+        self.x_field   = self.chart1_cfg.get("x_axis", "time_period")
+        self.y_field   = self.chart1_cfg.get("y_axis", "metric_value")
+        self.avg_field = self.chart2_cfg.get("y_axis", "computed_metric")
+
+        # Telemetry state (updated via on_telemetry_update)
+        self._latest_stats = {}
+
+    def on_telemetry_update(self, stats: dict) -> None:
+        """Called by the telemetry subject when new stats are available."""
+        self._latest_stats = stats
+
+    def run(self):
+        """
+        Main loop. Sets up matplotlib figure and keeps updating it
+        as packets arrive on the output_queue.
+        """
+        plt.ion()   # interactive mode — lets us update the figure without blocking
+
+        fig = plt.figure(figsize=(14, 9))
+        fig.suptitle("Pipeline Dashboard — Real-Time View", fontsize=14, fontweight="bold")
+
+        # Layout: 3 rows — telemetry | values | average
+        gs = gridspec.GridSpec(3, 1, height_ratios=[1, 2, 2], hspace=0.5)
+        ax_telemetry = fig.add_subplot(gs[0])
+        ax_values    = fig.add_subplot(gs[1])
+        ax_average   = fig.add_subplot(gs[2])
+
+        packet_count = 0
+        dropped_count = 0
+
+        while True:
+            # Try to grab a packet (non-blocking so we can keep updating the chart)
+            try:
+                packet = self.output_queue.get(timeout=0.2)
+            except Exception:
+                # No packet yet — just redraw telemetry and continue
+                self._redraw(fig, ax_telemetry, ax_values, ax_average,
+                             packet_count, dropped_count)
+                continue
+
+            if packet is self.SENTINEL:
+                print("[Dashboard] Stream ended. Switching to static view.")
+                plt.ioff()
+                self._redraw(fig, ax_telemetry, ax_values, ax_average,
+                             packet_count, dropped_count)
+                plt.show()   # block so the final chart stays visible
+                break
+
+            # Add data point to our buffers
+            self.x_values.append(packet.get(self.x_field, packet_count))
+            self.y_values.append(packet.get(self.y_field, 0))
+            self.y_averages.append(packet.get(self.avg_field, 0))
+            packet_count += 1
+
+            # Ask telemetry to refresh stats and notify us
+            self.telemetry.notify_observers()
+
+            # Redraw everything
+            self._redraw(fig, ax_telemetry, ax_values, ax_average,
+                         packet_count, dropped_count)
+
+    def _redraw(self, fig, ax_tel, ax_val, ax_avg, packet_count, dropped_count):
+        """Clear and redraw all three panels."""
+        stats = self._latest_stats
+
+        # ── Panel 1: Telemetry bars ──────────────────────────────────────────
+        ax_tel.clear()
+        ax_tel.set_title("Queue Telemetry  (🟢 flowing  🟡 filling  🔴 backpressure)",
+                          fontsize=9)
+        ax_tel.set_xlim(0, 100)
+        ax_tel.set_yticks([])
+        ax_tel.set_xlabel("Queue Fill (%)", fontsize=8)
+
+        streams = []
+        if self.show_raw:          streams.append(("Raw Stream (Input→Core)",      "raw"))
+        if self.show_intermediate: streams.append(("Core Stream (Core→Aggregator)","intermediate"))
+        if self.show_processed:    streams.append(("Output Stream (Agg→Dashboard)","processed"))
+
+        y_pos = range(len(streams) - 1, -1, -1)
+        for y, (label, key) in zip(y_pos, streams):
+            if key in stats:
+                pct   = stats[key]["pct"]
+                color = stats[key]["color"]
+                size  = stats[key]["size"]
+                ax_tel.barh(y, pct, color=color, alpha=0.8, height=0.5)
+                ax_tel.text(pct + 1, y, f"{size} pkts ({pct:.0f}%)",
+                            va="center", fontsize=8)
+                ax_tel.text(-1, y, label, va="center", ha="right", fontsize=8)
+
+        ax_tel.text(95, len(streams) - 0.3,
+                    f"Processed: {packet_count}", fontsize=8, color="gray")
+
+        # ── Panel 2: Live values ─────────────────────────────────────────────
+        ax_val.clear()
+        ax_val.set_title(self.chart1_cfg.get("title", "Live Values"), fontsize=10)
+        ax_val.set_xlabel(self.x_field, fontsize=8)
+        ax_val.set_ylabel(self.y_field, fontsize=8)
+        if self.x_values:
+            ax_val.plot(list(self.x_values), list(self.y_values),
+                        color="steelblue", linewidth=1.2, marker=".", markersize=3)
+
+        # ── Panel 3: Running average ─────────────────────────────────────────
+        ax_avg.clear()
+        ax_avg.set_title(self.chart2_cfg.get("title", "Running Average"), fontsize=10)
+        ax_avg.set_xlabel(self.x_field, fontsize=8)
+        ax_avg.set_ylabel(self.avg_field, fontsize=8)
+        if self.x_values:
+            ax_avg.plot(list(self.x_values), list(self.y_averages),
+                        color="darkorange", linewidth=1.5, marker=".", markersize=3)
+
+        plt.pause(0.01)   # yield control to matplotlib so it can actually draw
