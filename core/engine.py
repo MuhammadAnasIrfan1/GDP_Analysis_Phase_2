@@ -1,366 +1,191 @@
-from __future__ import annotations
+"""
+core/engine.py — The Core Worker (Business Logic)
 
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Tuple
+Phase 3 changes from Phase 2:
+  - No longer works on a full dataset at once.
+  - Runs as a multiprocessing.Process, pulling packets one-by-one from a queue.
+  - Two responsibilities:
+      1. STATELESS: Verify the cryptographic signature of each packet (drop fakes).
+      2. STATEFUL:  Forward verified packets to the Aggregator via the output queue.
 
-from .contracts import DataSink, PipelineService, Record
+The Scatter-Gather pattern is handled by main.py spawning multiple CoreWorker processes
+(scatter) all reading from the same raw_queue, and an Aggregator process (gather) that
+collects results from the processed_queue in order.
+
+This module still knows NOTHING about CSV columns, sensor names, or chart types.
+It only works on generic "packets" with keys defined in config.json's schema_mapping.
+"""
+
+import hashlib
+import multiprocessing
+import time
+from typing import Any
 
 
-@dataclass(frozen=True)
-class EngineConfig:
-    continent: str
-    year: int
-    start_year: int
-    end_year: int
-    decline_years: int = 3
+# ── Stateless Helper (Pure Function) ─────────────────────────────────────────
+# This is the "Functional Core" — no side effects, no shared state.
+# Given the same inputs it always returns the same output.
+# Easy to test, easy to explain.
 
-
-class TransformationEngine(PipelineService):
+def verify_signature(raw_value: float, signature: str, secret_key: str, iterations: int) -> bool:
     """
-    Core transformation engine.
+    Recomputes the PBKDF2-HMAC-SHA256 hash for the given sensor value
+    and checks it against the packet's attached signature.
 
-    This class is completely agnostic of input and output details.
-    A concrete DataSink is injected via the constructor, and inputs
-    interact with it only through the PipelineService protocol.
+    Why PBKDF2? It's intentionally slow (100k iterations) — that's the point.
+    In real systems this prevents brute-force attacks on the secret key.
+    Here it also simulates CPU-heavy work so we can actually see backpressure.
+
+    The readme.txt told us:
+      password = secret_key
+      salt     = raw_value rounded to 2 decimal places (as a string)
+    """
+    raw_str = f"{raw_value:.2f}"
+    password_bytes = secret_key.encode("utf-8")
+    salt_bytes = raw_str.encode("utf-8")
+
+    computed = hashlib.pbkdf2_hmac(
+        hash_name="sha256",
+        password=password_bytes,
+        salt=salt_bytes,
+        iterations=iterations,
+    )
+    return computed.hex() == signature
+
+
+# ── CoreWorker Process ────────────────────────────────────────────────────────
+
+class CoreWorker:
+    """
+    One Core worker process.
+
+    main.py spawns `core_parallelism` copies of this (Scatter).
+    Each one loops: pull from raw_queue → verify → push to processed_queue.
+
+    The "Imperative Shell" lives here — it manages the loop, the queues,
+    and the poison-pill sentinel. The actual crypto logic is the pure function above.
     """
 
-    def __init__(self, sink: DataSink, config: EngineConfig) -> None:
-        self._sink = sink
-        self._config = config
+    SENTINEL = None  # Poison pill: when we see None, we stop.
 
-    # PipelineService API -------------------------------------------------
-    def execute(self, raw_data: List[Any]) -> None:
+    def __init__(self, worker_id: int, raw_queue: multiprocessing.Queue,
+                 processed_queue: multiprocessing.Queue, config: dict):
+        self.worker_id = worker_id
+        self.raw_queue = raw_queue
+        self.processed_queue = processed_queue
+
+        # Pull what we need from config so we don't pass the whole dict around
+        stateless = config["processing"]["stateless_tasks"]
+        self.secret_key = stateless["secret_key"]
+        self.iterations = stateless["iterations"]
+
+        # Figure out which field name holds the value and the signature
+        # (generic — works for any schema, not just sensor data)
+        self.value_field = "metric_value"    # internal mapping for the numeric value
+        self.hash_field  = "security_hash"   # internal mapping for the signature
+
+    def run(self):
         """
-        Entry point used by Input drivers.
-        raw_data is typically a list of GDP records loaded from an external source.
+        Main loop. Runs forever until it sees a poison pill (SENTINEL = None).
+        This method is what multiprocessing.Process will call.
         """
-        records = self._ensure_record_shape(raw_data)
+        while True:
+            packet = self.raw_queue.get()  # blocks until something arrives
 
-        results: List[Record] = []
-        results.extend(self._top_bottom_gdp(records))
-        results.extend(self._gdp_growth_by_country(records))
-        results.extend(self._average_gdp_by_continent(records))
-        results.extend(self._global_gdp_trend(records))
-        results.extend(self._fastest_growing_continent(records))
-        results.extend(self._consistent_decline_countries(records))
-        results.extend(self._continent_contribution(records))
+            # Poison pill check — time to shut down
+            if packet is self.SENTINEL:
+                # Put the sentinel back so other workers also get to see it
+                self.raw_queue.put(self.SENTINEL)
+                break
 
-        self._sink.write(results)
+            raw_value = packet.get(self.value_field)
+            signature = packet.get(self.hash_field, "")
 
-    # Internal helpers ----------------------------------------------------
-    def _ensure_record_shape(self, raw_data: Iterable[Any]) -> List[Record]:
-        records: List[Record] = []
-        for item in raw_data:
-            if isinstance(item, dict):
-                records.append(item)
-        return records
-
-    # Metric 1 & 2: top / bottom 10 --------------------------------------
-    def _top_bottom_gdp(self, records: List[Record]) -> List[Record]:
-        continent = self._config.continent
-        year_key = str(self._config.year)
-
-        filtered: List[Tuple[str, float]] = []
-        for rec in records:
-            if rec.get("Continent") != continent:
-                continue
-            value = rec.get(year_key)
-            if value is None:
-                continue
-            try:
-                gdp = float(value)
-            except (TypeError, ValueError):
-                continue
-            filtered.append((str(rec.get("Country Name", "")), gdp))
-
-        filtered.sort(key=lambda x: x[1])
-
-        bottom = filtered[:10]
-        top = list(reversed(filtered[-10:])) if filtered else []
-
-        return [
-            {
-                "metric": "top_10_countries_by_gdp",
-                "continent": continent,
-                "year": self._config.year,
-                "countries": [{"country": c, "gdp": g} for c, g in top],
-            },
-            {
-                "metric": "bottom_10_countries_by_gdp",
-                "continent": continent,
-                "year": self._config.year,
-                "countries": [{"country": c, "gdp": g} for c, g in bottom],
-            },
-        ]
-
-    # Metric 3: GDP growth by country ------------------------------------
-    def _gdp_growth_by_country(self, records: List[Record]) -> List[Record]:
-        continent = self._config.continent
-        start_key = str(self._config.start_year)
-        end_key = str(self._config.end_year)
-
-        countries: List[Dict[str, Any]] = []
-        for rec in records:
-            if rec.get("Continent") != continent:
-                continue
-            start_val = rec.get(start_key)
-            end_val = rec.get(end_key)
-            if start_val is None or end_val is None:
-                continue
-            try:
-                start_gdp = float(start_val)
-                end_gdp = float(end_val)
-            except (TypeError, ValueError):
-                continue
-            if start_gdp <= 0:
-                continue
-            growth_rate = (end_gdp - start_gdp) / start_gdp
-            countries.append(
-                {
-                    "country": rec.get("Country Name"),
-                    "start_year": self._config.start_year,
-                    "end_year": self._config.end_year,
-                    "start_gdp": start_gdp,
-                    "end_gdp": end_gdp,
-                    "growth_rate": growth_rate,
-                }
+            # --- Stateless: verify the packet (pure function, no side effects) ---
+            is_authentic = verify_signature(
+                raw_value=raw_value,
+                signature=signature,
+                secret_key=self.secret_key,
+                iterations=self.iterations,
             )
 
-        return [
-            {
-                "metric": "gdp_growth_by_country",
-                "continent": continent,
-                "start_year": self._config.start_year,
-                "end_year": self._config.end_year,
-                "countries": sorted(
-                    countries, key=lambda c: c["growth_rate"], reverse=True
-                ),
-            }
-        ]
-
-    # Metric 4: average GDP by continent ---------------------------------
-    def _average_gdp_by_continent(self, records: List[Record]) -> List[Record]:
-        start_year = self._config.start_year
-        end_year = self._config.end_year
-
-        agg: Dict[str, Dict[str, float]] = {}
-        for rec in records:
-            continent = rec.get("Continent")
-            if not continent:
-                continue
-            bucket = agg.setdefault(continent, {"sum": 0.0, "count": 0.0})
-            for year in range(start_year, end_year + 1):
-                value = rec.get(str(year))
-                if value is None:
-                    continue
-                try:
-                    gdp = float(value)
-                except (TypeError, ValueError):
-                    continue
-                bucket["sum"] += gdp
-                bucket["count"] += 1.0
-
-        averages = [
-            {
-                "continent": cont,
-                "average_gdp": bucket["sum"] / bucket["count"]
-                if bucket["count"]
-                else 0.0,
-            }
-            for cont, bucket in agg.items()
-        ]
-
-        return [
-            {
-                "metric": "average_gdp_by_continent",
-                "start_year": start_year,
-                "end_year": end_year,
-                "continents": sorted(
-                    averages, key=lambda c: c["average_gdp"], reverse=True
-                ),
-            }
-        ]
-
-    # Metric 5: global GDP trend -----------------------------------------
-    def _global_gdp_trend(self, records: List[Record]) -> List[Record]:
-        start_year = self._config.start_year
-        end_year = self._config.end_year
-
-        trend: List[Dict[str, Any]] = []
-        for year in range(start_year, end_year + 1):
-            total = 0.0
-            for rec in records:
-                value = rec.get(str(year))
-                if value is None:
-                    continue
-                try:
-                    gdp = float(value)
-                except (TypeError, ValueError):
-                    continue
-                total += gdp
-            trend.append({"year": year, "global_gdp": total})
-
-        return [
-            {
-                "metric": "global_gdp_trend",
-                "start_year": start_year,
-                "end_year": end_year,
-                "trend": trend,
-            }
-        ]
-
-    # Metric 6: fastest growing continent --------------------------------
-    def _fastest_growing_continent(self, records: List[Record]) -> List[Record]:
-        start_year = self._config.start_year
-        end_year = self._config.end_year
-
-        start_totals: Dict[str, float] = {}
-        end_totals: Dict[str, float] = {}
-
-        for rec in records:
-            continent = rec.get("Continent")
-            if not continent:
-                continue
-            start_val = rec.get(str(start_year))
-            end_val = rec.get(str(end_year))
-            if start_val is None or end_val is None:
-                continue
-            try:
-                start_gdp = float(start_val)
-                end_gdp = float(end_val)
-            except (TypeError, ValueError):
-                continue
-            start_totals[continent] = start_totals.get(continent, 0.0) + start_gdp
-            end_totals[continent] = end_totals.get(continent, 0.0) + end_gdp
-
-        growth_rates: List[Dict[str, Any]] = []
-        for continent, start_total in start_totals.items():
-            end_total = end_totals.get(continent, 0.0)
-            if start_total <= 0:
-                continue
-            growth_rate = (end_total - start_total) / start_total
-            growth_rates.append(
-                {
-                    "continent": continent,
-                    "start_year": start_year,
-                    "end_year": end_year,
-                    "start_gdp": start_total,
-                    "end_gdp": end_total,
-                    "growth_rate": growth_rate,
-                }
-            )
-
-        fastest = (
-            max(growth_rates, key=lambda c: c["growth_rate"]) if growth_rates else None
-        )
-
-        return [
-            {
-                "metric": "fastest_growing_continent",
-                "start_year": start_year,
-                "end_year": end_year,
-                "result": fastest,
-            }
-        ]
-
-    # Metric 7: consistent GDP decline -----------------------------------
-    def _consistent_decline_countries(self, records: List[Record]) -> List[Record]:
-        continent = self._config.continent
-        end_year = self._config.end_year
-        n_years = self._config.decline_years
-
-        years = list(range(end_year - n_years + 1, end_year + 1))
-
-        declining: List[Dict[str, Any]] = []
-        for rec in records:
-            if rec.get("Continent") != continent:
-                continue
-            values: List[float] = []
-            valid = True
-            for year in years:
-                value = rec.get(str(year))
-                if value is None:
-                    valid = False
-                    break
-                try:
-                    gdp = float(value)
-                except (TypeError, ValueError):
-                    valid = False
-                    break
-                values.append(gdp)
-            if not valid or len(values) != len(years):
-                continue
-            if all(values[i] > values[i + 1] for i in range(len(values) - 1)):
-                declining.append(
-                    {
-                        "country": rec.get("Country Name"),
-                        "years": years,
-                        "values": values,
-                    }
-                )
-
-        return [
-            {
-                "metric": "consistent_gdp_decline",
-                "continent": continent,
-                "years": years,
-                "countries": declining,
-            }
-        ]
-
-    # Metric 8: continent contribution -----------------------------------
-    def _continent_contribution(self, records: List[Record]) -> List[Record]:
-        start_year = self._config.start_year
-        end_year = self._config.end_year
-
-        continent_totals: Dict[str, float] = {}
-
-        for rec in records:
-            continent = rec.get("Continent")
-            if not continent:
+            if not is_authentic:
+                # Drop the packet — don't forward garbage downstream
+                print(f"[Worker-{self.worker_id}] ⚠ Dropped unverified packet: {packet}")
                 continue
 
-            # Exclude global aggregates or other non-continent groupings
-            if str(continent).lower() in {"global", "world"}:
+            # Stamp the packet with which worker verified it (helpful for debugging)
+            packet["verified_by"] = self.worker_id
+            self.processed_queue.put(packet)
+
+
+# ── Aggregator Process (Gather) ───────────────────────────────────────────────
+
+class Aggregator:
+    """
+    The single "gather" node. Receives verified packets from all Core workers,
+    computes a sliding window running average, and forwards results to the Output.
+
+    Why a single aggregator? Because running average is STATEFUL — it needs to
+    see packets in order. Letting multiple workers do this would give wrong results.
+
+    "Functional Core, Imperative Shell" applied here:
+      - Shell (this class): manages the window list, queue loop, and sentinel logic.
+      - Core (compute_running_average): pure function, just math, no side effects.
+    """
+
+    SENTINEL = None
+
+    def __init__(self, processed_queue: multiprocessing.Queue,
+                 output_queue: multiprocessing.Queue, config: dict,
+                 num_workers: int):
+        self.processed_queue = processed_queue
+        self.output_queue = output_queue
+        self.num_workers = num_workers  # how many poison pills to expect
+
+        stateful = config["processing"]["stateful_tasks"]
+        self.window_size = stateful["running_average_window_size"]
+        self.value_field = "metric_value"
+
+        # The sliding window — this is the mutable state the shell manages
+        self._window = []
+
+    @staticmethod
+    def compute_running_average(window: list) -> float:
+        """
+        Pure function — the Functional Core.
+        Takes a list of numbers and returns their average.
+        No side effects. Easy to test.
+        """
+        if not window:
+            return 0.0
+        return sum(window) / len(window)
+
+    def run(self):
+        """
+        Collect verified packets, compute running average, push to output queue.
+        Stops after receiving `num_workers` poison pills (one from each worker).
+        """
+        sentinels_seen = 0
+
+        while sentinels_seen < self.num_workers:
+            packet = self.processed_queue.get()
+
+            if packet is self.SENTINEL:
+                sentinels_seen += 1
                 continue
 
-            subtotal = 0.0
-            for year in range(start_year, end_year + 1):
-                value = rec.get(str(year))
-                if value is None:
-                    continue
-                try:
-                    gdp = float(value)
-                except (TypeError, ValueError):
-                    continue
-                subtotal += gdp
+            # Update the sliding window (Imperative Shell managing state)
+            value = packet[self.value_field]
+            self._window.append(value)
+            if len(self._window) > self.window_size:
+                self._window.pop(0)  # drop the oldest
 
-            continent_totals[continent] = continent_totals.get(continent, 0.0) + subtotal
+            # Compute average (Functional Core — pure function)
+            avg = self.compute_running_average(self._window)
+            packet["computed_metric"] = round(avg, 4)
 
-        # Compute total only from continent rows (no global aggregate)
-        global_total = sum(continent_totals.values())
+            self.output_queue.put(packet)
 
-        contributions: List[Dict[str, Any]] = []
-        for continent, total in continent_totals.items():
-            share = (total / global_total) if global_total else 0.0
-            contributions.append(
-                {
-                    "continent": continent,
-                    "total_gdp": total,
-                    "share_of_global_gdp": share,
-                }
-            )
-
-        return [
-            {
-                "metric": "continent_contribution_to_global_gdp",
-                "start_year": start_year,
-                "end_year": end_year,
-                "continents": sorted(
-                    contributions,
-                    key=lambda c: c["share_of_global_gdp"],
-                    reverse=True,
-                ),
-            }
-        ]
-
+        # Tell the output that we're done
+        self.output_queue.put(self.SENTINEL)
