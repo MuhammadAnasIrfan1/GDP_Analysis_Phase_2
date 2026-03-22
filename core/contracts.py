@@ -1,29 +1,39 @@
-from __future__ import annotations
+"""
+core/contracts.py — The Contracts (Protocols)
 
-from typing import Any, Dict, List, Protocol, runtime_checkable
+Same idea as Phase 2 — we define "job descriptions" that each module must follow.
+Phase 3 adds a Telemetry subject contract for the Observer pattern.
+
+No module imports from another module's internals.
+They only depend on these shared contracts.
+"""
+
+from typing import Protocol, List, Any
 
 
-Record = Dict[str, Any]
-
-
-@runtime_checkable
 class DataSink(Protocol):
     """
-    Outbound Abstraction: the Core calls this to emit data.
-    Any output implementation must satisfy this protocol.
+    Outbound contract: The Core sends processed packets to the sink.
+    The Output module must implement this.
     """
-
-    def write(self, records: List[Record]) -> None:  # pragma: no cover - protocol
+    def write(self, key: str, data: Any) -> None:
         ...
 
 
-@runtime_checkable
 class PipelineService(Protocol):
     """
-    Inbound Abstraction: the Input module calls this to hand data
-    over to the Core for processing.
+    Inbound contract: The Input module hands raw data to the Core via execute().
+    Used in Phase 2 batch mode — kept for backward compatibility.
     """
-
-    def execute(self, raw_data: List[Any]) -> None:  # pragma: no cover - protocol
+    def execute(self, raw_data: List[Any]) -> None:
         ...
 
+
+class TelemetrySubject(Protocol):
+    """
+    Observer pattern — the Subject side.
+    The dashboard (Observer) subscribes to this to get live queue stats.
+    """
+    def get_stats(self) -> dict:
+        """Returns a snapshot of current queue sizes and capacities."""
+        ...
