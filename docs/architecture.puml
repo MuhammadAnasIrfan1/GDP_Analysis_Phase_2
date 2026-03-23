@@ -111,3 +111,58 @@ package "plugins.inputs" {
     Drops poison pill (None) when done.
   end note
 }
+
+
+
+' ─────────────────────────────────────────────
+package "plugins.outputs" {
+
+  class PipelineTelemetry {
+    -_raw_queue: Queue
+    -_processed_queue: Queue
+    -_output_queue: Queue
+    +max_size: int
+    -_observers: list
+    +__init__(raw_queue, processed_queue, output_queue, max_size)
+    +subscribe(observer): None
+    +get_stats(): dict
+    +notify_observers(): None
+  }
+
+  class RealtimeDashboard {
+    -output_queue: Queue
+    -telemetry: PipelineTelemetry
+    -x_values: deque
+    -y_values: deque
+    -y_averages: deque
+    -chart1_cfg: dict
+    -chart2_cfg: dict
+    -x_field: str
+    -y_field: str
+    -avg_field: str
+    -_latest_stats: dict
+    +SENTINEL: None
+    +__init__(output_queue, telemetry, config)
+    +on_telemetry_update(stats: dict): None
+    +run(): None
+    -_redraw(fig, ax_tel, ax_val, ax_avg, ...): None
+  }
+
+  note bottom of PipelineTelemetry
+    Observer Pattern — Subject.
+    Polls queue sizes & computes fill%.
+    Color logic:
+      Green  < 50% = flowing
+      Yellow 50-80% = filling
+      Red    > 80% = backpressure
+  end note
+
+  note bottom of RealtimeDashboard
+    Observer Pattern — Observer.
+    Subscribes to PipelineTelemetry.
+    Renders 3 panels via matplotlib:
+      1. Queue telemetry bars
+      2. Live values line chart
+      3. Running average line chart
+  end note
+}
