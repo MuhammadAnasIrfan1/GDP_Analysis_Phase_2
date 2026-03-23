@@ -45,7 +45,40 @@ class StreamingCSVReader:
     def run(self) -> None:
         ...
  
+ # ── Core (mirrors core/engine.py) ─────────────────────────────────────────────
  
+def verify_signature(raw_value: float, signature: str,
+                     secret_key: str, iterations: int) -> bool:
+    """Pure function — Functional Core. PBKDF2-HMAC-SHA256 check."""
+    ...
+ 
+ 
+class CoreWorker:
+    SENTINEL = None
+ 
+    def __init__(self, worker_id: int, raw_queue: multiprocessing.Queue,
+                 processed_queue: multiprocessing.Queue, config: dict) -> None:
+        self.worker_id = worker_id
+        self.raw_queue = raw_queue
+        self.processed_queue = processed_queue
+        self.secret_key: str = ""
+        self.iterations: int = 0
+        self.value_field: str = "metric_value"
+        self.hash_field: str = "security_hash"
+ 
+    def run(self) -> None:
+        ...
+ 
+ 
+class Aggregator:
+    SENTINEL = None
+ 
+    def __init__(self, processed_queue: multiprocessing.Queue,
+                 output_queue: multiprocessing.Queue,
+                 
+
+
+
 @dataclass
 class EngineConfig:
     continent: str
