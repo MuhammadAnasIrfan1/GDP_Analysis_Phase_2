@@ -20,3 +20,13 @@ package "core" {
   interface DataSink <<Protocol>> {
     +write(key: str, data: Any): None
   }
+
+
+
+  interface PipelineService <<Protocol>> {
+    +execute(raw_data: List[Any]): None
+  }
+
+  interface TelemetrySubject <<Protocol>> {
+    +get_stats(): dict
+  }
