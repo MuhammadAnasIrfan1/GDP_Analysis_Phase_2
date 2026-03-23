@@ -166,3 +166,51 @@ package "plugins.outputs" {
       3. Running average line chart
   end note
 }
+
+
+' ─────────────────────────────────────────────
+package "main" {
+  class MainModule {
+    +load_config(path: str): dict
+    +run_input(raw_queue, config): None
+    +run_core_worker(id, raw_queue, processed_queue, config): None
+    +run_aggregator(processed_queue, output_queue, config, num_workers): None
+    +bootstrap(): None
+  }
+
+  note right of MainModule
+    Creates 3 bounded Queues.
+    Wires all processes.
+    Spawns:
+      1x StreamingCSVReader (Input)
+      Nx CoreWorker (Scatter, N=core_parallelism)
+      1x Aggregator (Gather)
+    Runs RealtimeDashboard in main thread.
+  end note
+}
+
+' ─────────────────────────────────────────────
+' Relationships
+
+TelemetrySubject <|.. PipelineTelemetry : implements
+
+CoreWorker ..> VS : calls
+Aggregator ..> Aggregator : calls\ncompute_running_average()
+
+PipelineTelemetry "1" o-- "1..*" RealtimeDashboard : notifies (Observer)
+RealtimeDashboard ..> PipelineTelemetry : subscribes to
+
+MainModule --> StreamingCSVReader : creates & starts\n(1 process)
+MainModule --> CoreWorker : creates & starts\n(N processes — Scatter)
+MainModule --> Aggregator : creates & starts\n(1 process — Gather)
+MainModule --> PipelineTelemetry : creates
+MainModule --> RealtimeDashboard : creates & runs\n(main thread)
+
+StreamingCSVReader ..> "raw_queue\n<<Queue>>" : put(packet)
+"raw_queue\n<<Queue>>" ..> CoreWorker : get()
+CoreWorker ..> "processed_queue\n<<Queue>>" : put(verified_packet)
+"processed_queue\n<<Queue>>" ..> Aggregator : get()
+Aggregator ..> "output_queue\n<<Queue>>" : put(result_packet)
+"output_queue\n<<Queue>>" ..> RealtimeDashboard : get()
+
+@enduml
