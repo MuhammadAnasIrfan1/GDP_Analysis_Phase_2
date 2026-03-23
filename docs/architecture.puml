@@ -87,3 +87,27 @@ package "core::functions" {
     (PBKDF2-HMAC-SHA256 — pure function)
   }
 }
+
+
+' ─────────────────────────────────────────────
+package "plugins.inputs" {
+
+  class StreamingCSVReader {
+    -raw_queue: Queue
+    -filepath: str
+    -delay: float
+    -schema: dict
+    +SENTINEL: None
+    +__init__(raw_queue, config)
+    -{static} _build_schema(columns: list): dict
+    -_map_row(raw_row: dict): dict
+    +run(): None
+  }
+
+  note bottom of StreamingCSVReader
+    Reads CSV row-by-row.
+    Applies schema_mapping from config.json.
+    Pushes generic packets into raw_queue.
+    Drops poison pill (None) when done.
+  end note
+}
