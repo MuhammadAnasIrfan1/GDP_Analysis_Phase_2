@@ -132,7 +132,27 @@ class RealtimeDashboard:
     def run(self) -> None:
         ...
  
-
+# ── Main (mirrors main.py) ────────────────────────────────────────────────────
+ 
+class MainModule:
+    def load_config(self, path: str) -> dict:
+        ...
+ 
+    def run_input(self, raw_queue: multiprocessing.Queue, config: dict) -> None:
+        ...
+ 
+    def run_core_worker(self, worker_id: int, raw_queue: multiprocessing.Queue,
+                        processed_queue: multiprocessing.Queue, config: dict) -> None:
+        ...
+ 
+    def run_aggregator(self, processed_queue: multiprocessing.Queue,
+                       output_queue: multiprocessing.Queue,
+                       config: dict, num_workers: int) -> None:
+        ...
+ 
+    def bootstrap(self) -> None:
+        ...
+ 
 class CsvReader:
     def __init__(self, path: str, service: PipelineService) -> None:
         self.path = path
