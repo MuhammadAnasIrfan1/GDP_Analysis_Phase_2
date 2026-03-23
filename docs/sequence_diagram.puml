@@ -106,3 +106,30 @@ loop until SENTINEL received
     end
   end
 end
+
+' ── 4. Aggregator Stage ───────────────────────────────────────────────────────
+== 4. Aggregator Stage: Gather (single process — stateful) ==
+
+note over AGG
+  Waits for N sentinel pills
+  (one per CoreWorker) before shutting down.
+end note
+
+loop until N sentinels received
+  AGG -> PQ : get()  ← blocks until packet arrives
+
+  alt packet is SENTINEL
+    AGG -> AGG : sentinels_seen += 1
+  else packet is verified data
+    AGG -> AGG : _window.append(metric_value)\nif len > window_size: pop(0)
+    AGG -> AGG : avg = compute_running_average(_window)\n[Pure Function — Functional Core]
+    AGG -> AGG : packet["computed_metric"] = round(avg, 4)
+    AGG -> OQ : put(enriched_packet)
+  end
+end
+
+AGG -> OQ : put(SENTINEL=None)
+note right of AGG
+  Signals dashboard
+  that stream is complete.
+end note
