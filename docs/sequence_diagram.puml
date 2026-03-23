@@ -1,0 +1,50 @@
+@startuml Phase3_SequenceDiagram
+
+title SDA Project Phase 3 - Generic Concurrent Real-Time Pipeline\nSequence Diagram
+
+skinparam sequenceArrowThickness 1.5
+skinparam sequenceParticipantFontStyle bold
+skinparam sequenceParticipantFontSize 12
+skinparam sequenceLifeLineBorderColor #555555
+skinparam sequenceBoxBackgroundColor #F0F4FF
+skinparam sequenceBoxBorderColor #2E75B6
+skinparam noteBorderColor #AAAAAA
+skinparam noteBackgroundColor #FFFDE7
+skinparam ArrowColor #333333
+
+' ── Participants ──────────────────────────────────────────────────────────────
+participant "main.py\n(bootstrap)" as MAIN #D6E4FF
+participant "StreamingCSVReader\n[Process: Input]" as INPUT #D6FFD6
+participant "raw_queue\n<<Queue, maxsize=50>>" as RQ #EEEEEE
+participant "CoreWorker-0..N\n[Processes: Scatter ×N]" as CORE #FFE5CC
+participant "processed_queue\n<<Queue, maxsize=50>>" as PQ #EEEEEE
+participant "Aggregator\n[Process: Gather]" as AGG #E5CCFF
+participant "output_queue\n<<Queue, maxsize=50>>" as OQ #EEEEEE
+participant "PipelineTelemetry\n[Subject]" as TEL #FFFDE7
+participant "RealtimeDashboard\n[Observer, main thread]" as DASH #FFD6D6
+
+' ── 1. Bootstrap ─────────────────────────────────────────────────────────────
+== 1. Bootstrap & Wiring (main thread) ==
+
+MAIN -> MAIN : load_config("config.json")
+MAIN -> RQ : create Queue(maxsize=50)
+MAIN -> PQ : create Queue(maxsize=50)
+MAIN -> OQ : create Queue(maxsize=50)
+MAIN -> TEL : PipelineTelemetry(raw_q, proc_q, out_q, max_size=50)
+MAIN -> DASH : RealtimeDashboard(output_queue, telemetry, config)
+DASH -> TEL : subscribe(self)
+note right of TEL
+  Observer registered.
+  Dashboard is now an observer
+  of the telemetry subject.
+end note
+
+MAIN -> AGG : Process(target=run_aggregator).start()
+MAIN -> CORE : Process(target=run_core_worker, ×N).start()
+MAIN -> INPUT : Process(target=run_input).start()
+
+note over MAIN
+  Dashboard.run() called
+  in the main thread
+  (matplotlib requires main thread).
+end note
