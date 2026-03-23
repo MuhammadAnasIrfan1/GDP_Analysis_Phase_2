@@ -1,0 +1,22 @@
+@startuml Phase3_ClassDiagram
+
+title SDA Project Phase 3 - Generic Concurrent Real-Time Pipeline\nClass Diagram
+
+skinparam classAttributeIconSize 0
+skinparam classFontStyle bold
+skinparam classFontSize 13
+skinparam packageFontSize 13
+skinparam ArrowColor #333333
+skinparam classBackgroundColor #FAFAFA
+skinparam classBorderColor #555555
+skinparam packageBackgroundColor #F0F4FF
+skinparam packageBorderColor #2E75B6
+skinparam noteBorderColor #AAAAAA
+skinparam noteBackgroundColor #FFFDE7
+
+' ─────────────────────────────────────────────
+package "core" {
+
+  interface DataSink <<Protocol>> {
+    +write(key: str, data: Any): None
+  }
