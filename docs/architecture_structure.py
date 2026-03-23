@@ -28,15 +28,10 @@ class PipelineService(Protocol):
         ...
 
 @runtime_checkable
-class DataSink(Protocol):
-    def write(self, records: List[Record]) -> None:
+class TelemetrySubject(Protocol):
+    def get_stats(self) -> dict:
         ...
 
-
-@runtime_checkable
-class PipelineService(Protocol):
-    def execute(self, raw_data: List[Any]) -> None:
-        ...
 
 
 @dataclass
