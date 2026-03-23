@@ -1,19 +1,18 @@
 """
 Structural Python code that mirrors the PlantUML architecture diagram.
-
+ 
 This module is intentionally minimal and focuses on the relationships
 between components. The actual implementation lives in the main
 packages under core/ and plugins/.
 """
-
+ 
 from __future__ import annotations
-
-from dataclasses import dataclass
+ 
+import multiprocessing
 from typing import Any, List, Protocol, runtime_checkable
-
-
+ 
+ 
 Record = dict[str, Any]
-
 
 @runtime_checkable
 class DataSink(Protocol):
