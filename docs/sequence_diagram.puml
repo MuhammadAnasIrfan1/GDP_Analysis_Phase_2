@@ -133,3 +133,29 @@ note right of AGG
   Signals dashboard
   that stream is complete.
 end note
+
+' ── 5. Output Stage ───────────────────────────────────────────────────────────
+== 5. Output Stage: RealtimeDashboard (main thread — Observer) ==
+
+loop until SENTINEL received
+  DASH -> OQ : get(timeout=0.2)
+
+  alt packet received
+    DASH -> DASH : x_values.append(time_period)\ny_values.append(metric_value)\ny_averages.append(computed_metric)
+
+    DASH -> TEL : notify_observers()
+    TEL -> TEL : get_stats()\n→ poll qsize() on all 3 queues\n→ compute fill%, assign color\n(green/yellow/red)
+    TEL -> DASH : on_telemetry_update(stats)
+    DASH -> DASH : _latest_stats = stats
+
+    DASH -> DASH : _redraw()\n→ Panel 1: telemetry bars\n→ Panel 2: live values chart\n→ Panel 3: running avg chart\nplt.pause(0.01)
+
+  else timeout (no packet yet)
+    DASH -> DASH : _redraw() [telemetry only]
+  end
+
+  alt packet is SENTINEL
+    DASH -> DASH : plt.ioff()\nplt.show()  ← block (final view)
+    DASH -> DASH : break
+  end
+end
