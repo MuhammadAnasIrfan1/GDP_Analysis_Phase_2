@@ -1,58 +1,195 @@
-======================================================
+=====================================================
   GDP Analysis Pipeline — Phase 3
-  Generic Concurrent Real-Time Pipeline
-======================================================
+  Generic Concurrent Real-Time Data Pipeline
+=====================================================
+
 
 MAIN FILE
 ---------
-  python main.py
+Run the pipeline using:
 
-FILE STRUCTURE
---------------
-  main.py                  ← Entry point. Run this.
-  config.json              ← All pipeline configuration lives here.
+    python main.py
 
-  core/
-    contracts.py           ← Protocol definitions (DataSink, PipelineService, TelemetrySubject)
-    engine.py              ← CoreWorker (signature verification) + Aggregator (running average)
 
-  plugins/
-    inputs.py              ← StreamingCSVReader — reads CSV row-by-row into the pipeline
-    outputs.py             ← RealtimeDashboard + PipelineTelemetry (Observer pattern)
+PROJECT STRUCTURE
+-----------------
 
-  data/
-    sample_sensor_data.csv ← Training dataset (place your unseen dataset here too)
+main.py
+    Entry point of the system.
+    Creates queues, starts multiprocessing workers, and launches dashboard.
 
-SETUP
------
-  1. Place your data CSV file in the  data/  folder.
-  2. Update "dataset_path" in config.json to point to it.
-  3. Update "schema_mapping" in config.json to match the column names of your CSV.
-  4. Run:  python main.py
+config.json
+    Controls the entire pipeline configuration:
+    dataset location, schema mapping, concurrency settings, processing logic.
+
+
+core/
+    engine.py
+        Core processing logic.
+        - CoreWorker: verifies packet signatures using PBKDF2 hashing
+        - Aggregator: computes sliding window running average
+
+    contracts.py
+        Protocol definitions used for Dependency Inversion Principle.
+
+
+plugins/
+    inputs.py
+        StreamingCSVReader
+        Reads CSV rows one by one and pushes packets into the pipeline.
+
+    outputs.py
+        RealtimeDashboard
+        Displays real-time charts and queue telemetry.
+
+        PipelineTelemetry
+        Observer Subject that monitors queue sizes and notifies dashboard.
+
+
+data/
+    sample_sensor_data.csv
+        Sample dataset used for testing.
+        Unseen datasets should be placed in this folder.
+
+
+docs/
+    architecture.puml
+        PlantUML source for class diagram
+
+    architecture.png
+        Generated class diagram image
+
+    sequence_diagram.puml
+        PlantUML source for sequence diagram
+
+    sequence_diagram.png
+        Generated sequence diagram image
+
+
 
 DEPENDENCIES
 ------------
-  pip install matplotlib
 
-  The real-time dashboard uses the TkAgg backend which requires the
-  `tkinter` Python module.  On Linux this typically means installing the
-  system package `python3-tk` (e.g. `sudo apt install python3-tk`).  If
-  tkinter isn't available the code will automatically fall back to a
-  non-interactive "Agg" backend, but you won't get a live window.
+Install required packages:
 
-CRYPTOGRAPHIC SIGNATURE (for reference)
-----------------------------------------
-  SECRET_KEY = "sda_spring_2026_secure_key"
-  ITERATIONS = 100000
-  raw_value  = sensor value rounded to two decimal places (as string)
+    pip install -r requirements.txt
 
-  def generate_signature(raw_value_str, key, iterations):
-      password_bytes = key.encode('utf-8')
-      salt_bytes = raw_value_str.encode('utf-8')
-      hash_bytes = hashlib.pbkdf2_hmac(
-          hash_name='sha256',
-          password=password_bytes,
-          salt=salt_bytes,
-          iterations=iterations
-      )
-      return hash_bytes.hex()
+or manually:
+
+    pip install matplotlib
+
+
+
+HOW TO RUN
+----------
+
+1. Place your CSV dataset inside the data/ folder.
+
+2. Update dataset_path inside config.json:
+
+       "dataset_path": "data/your_dataset.csv"
+
+3. Update schema_mapping in config.json so that the column
+   names match the columns in your CSV file.
+
+4. Run the pipeline:
+
+       python main.py
+
+
+
+PIPELINE ARCHITECTURE
+---------------------
+
+The system uses a Producer–Consumer multiprocessing pipeline.
+
+Data Flow:
+
+Input → Raw Queue → Core Workers → Processed Queue → Aggregator → Output Queue → Dashboard
+
+
+PIPELINE COMPONENTS
+
+Input Module
+    StreamingCSVReader reads rows from CSV and pushes packets
+    into the raw queue with configurable delay.
+
+Core Module
+    Multiple CoreWorker processes verify packet authenticity
+    using cryptographic hashing (PBKDF2-HMAC-SHA256).
+
+Aggregator
+    Collects verified packets and computes a sliding window
+    running average of metric values.
+
+Output Module
+    RealtimeDashboard visualizes the processed data using
+    real-time charts and queue telemetry.
+
+
+
+DESIGN PATTERNS USED
+--------------------
+
+Dependency Inversion Principle (DIP)
+    Modules communicate through abstract contracts.
+
+Scatter–Gather Pattern
+    Multiple CoreWorkers process packets in parallel,
+    and Aggregator gathers the results.
+
+Producer–Consumer Architecture
+    Queues connect independent pipeline stages.
+
+Functional Core, Imperative Shell
+    Pure functions perform computation while process
+    classes manage state and queues.
+
+Observer Pattern
+    PipelineTelemetry monitors queue sizes and notifies
+    RealtimeDashboard to update telemetry indicators.
+
+
+
+TELEMETRY DASHBOARD
+-------------------
+
+The dashboard displays real-time pipeline health.
+
+Queue indicators:
+
+    Green   → queue under 50% capacity
+    Yellow  → queue between 50%–80%
+    Red     → queue over 80% (backpressure)
+
+Charts:
+
+    • Live Sensor Values
+    • Running Average of Sensor Values
+
+
+
+BACKPRESSURE DEMONSTRATION
+--------------------------
+
+If input speed exceeds processing speed, queues fill up and
+Input automatically slows down because multiprocessing queues
+are bounded.
+
+This demonstrates real-world pipeline backpressure behavior.
+
+
+
+IMPORTANT NOTE FOR TA
+---------------------
+
+The system is designed to work with completely unseen datasets.
+
+To test with a new dataset:
+
+1. Place the new CSV file in the data/ folder
+2. Update dataset_path in config.json
+3. Update schema_mapping to match the CSV column names
+4. Run:
+
+       python main.py
