@@ -43,3 +43,16 @@ package "core" {
     +__init__(worker_id, raw_queue, processed_queue, config)
     +run(): None
   }
+  
+  class Aggregator {
+    -processed_queue: Queue
+    -output_queue: Queue
+    -num_workers: int
+    -window_size: int
+    -value_field: str
+    -_window: list
+    +SENTINEL: None
+    +__init__(processed_queue, output_queue, config, num_workers)
+    +run(): None
+    +{static} compute_running_average(window: list): float
+  }
