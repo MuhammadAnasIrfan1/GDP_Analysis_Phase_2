@@ -105,6 +105,16 @@ class PipelineTelemetry(TelemetrySubject):
         self._output_queue = output_queue
         self.max_size = max_size
         self._observers: list = []
+    def subscribe(self, observer: Any) -> None:
+        ...
+ 
+    def get_stats(self) -> dict:
+        ...
+ 
+    def notify_observers(self) -> None:
+        ...
+ 
+ 
 
 
 class TransformationEngine(PipelineService):
