@@ -33,7 +33,19 @@ class TelemetrySubject(Protocol):
         ...
 
 
-
+# ── Input (mirrors plugins/inputs.py) ─────────────────────────────────────────
+ 
+class StreamingCSVReader:
+    def __init__(self, raw_queue: multiprocessing.Queue, config: dict) -> None:
+        self.raw_queue = raw_queue
+        self.filepath = config["dataset_path"]
+        self.delay = config["pipeline_dynamics"]["input_delay_seconds"]
+        self.schema: dict = {}
+ 
+    def run(self) -> None:
+        ...
+ 
+ 
 @dataclass
 class EngineConfig:
     continent: str
