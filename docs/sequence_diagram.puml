@@ -48,3 +48,23 @@ note over MAIN
   in the main thread
   (matplotlib requires main thread).
 end note
+
+' ── 2. Input Stage ────────────────────────────────────────────────────────────
+== 2. Input Stage: StreamingCSVReader (runs concurrently) ==
+
+loop for each row in CSV
+  INPUT -> INPUT : _map_row(raw_row)\n→ generic packet\n{entity_name, time_period,\n metric_value, security_hash}
+
+  alt raw_queue is full (backpressure)
+    INPUT -> RQ : put(packet)  ⟵ BLOCKS until space opens
+    note right of RQ
+      Bounded queue (maxsize=50).
+      When full, put() blocks —
+      this is automatic backpressure.
+      Input slows to match Core throughput.
+    end note
+  else raw_queue has space
+    INPUT -> RQ : put(packet)
+  end
+  INPUT -> INPUT : time.sleep(input_delay_seconds)
+end
