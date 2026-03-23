@@ -30,3 +30,16 @@ package "core" {
   interface TelemetrySubject <<Protocol>> {
     +get_stats(): dict
   }
+  
+  class CoreWorker {
+    -worker_id: int
+    -raw_queue: Queue
+    -processed_queue: Queue
+    -secret_key: str
+    -iterations: int
+    -value_field: str
+    -hash_field: str
+    +SENTINEL: None
+    +__init__(worker_id, raw_queue, processed_queue, config)
+    +run(): None
+  }
