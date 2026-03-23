@@ -75,7 +75,21 @@ class Aggregator:
  
     def __init__(self, processed_queue: multiprocessing.Queue,
                  output_queue: multiprocessing.Queue,
-                 
+                 config: dict, num_workers: int) -> None:
+        self.processed_queue = processed_queue
+        self.output_queue = output_queue
+        self.num_workers = num_workers
+        self.window_size: int = 0
+        self.value_field: str = "metric_value"
+        self._window: list = []
+ 
+    @staticmethod
+    def compute_running_average(window: list) -> float:
+        """Pure function — Functional Core."""
+        ...
+ 
+    def run(self) -> None:
+        ...
 
 
 
