@@ -68,3 +68,41 @@ loop for each row in CSV
   end
   INPUT -> INPUT : time.sleep(input_delay_seconds)
 end
+
+
+INPUT -> RQ : put(SENTINEL=None)
+note right of INPUT
+  Poison pill signals
+  "stream finished" to
+  all CoreWorkers.
+end note
+
+' ── 3. Core Stage ─────────────────────────────────────────────────────────────
+== 3. Core Stage: CoreWorker ×N (Scatter — runs concurrently) ==
+
+loop until SENTINEL received
+  CORE -> RQ : get()  ← blocks until packet arrives
+
+  alt packet is SENTINEL (None)
+    CORE -> RQ : put(SENTINEL)
+    note right of CORE
+      Re-queue sentinel so
+      other workers also see it.
+    end note
+    CORE -> CORE : break (shutdown)
+  else packet is data
+    CORE -> CORE : verify_signature(\n  raw_value, signature,\n  secret_key, iterations=100000\n)\n[PBKDF2-HMAC-SHA256\n— Pure Function]
+
+    alt signature VALID
+      CORE -> CORE : packet["verified_by"] = worker_id
+      CORE -> PQ : put(verified_packet)
+    else signature INVALID
+      CORE -> CORE : drop packet\n(print warning, continue)
+      note right of CORE
+        Unverified packets are
+        silently discarded here.
+        Never reach Aggregator.
+      end note
+    end
+  end
+end
