@@ -153,24 +153,3 @@ class MainModule:
     def bootstrap(self) -> None:
         ...
  
-class CsvReader:
-    def __init__(self, path: str, service: PipelineService) -> None:
-        self.path = path
-        self.service = service
-
-    def run(self) -> None:
-        ...
-
-
-class ConsoleWriter(DataSink):
-    def write(self, records: List[Record]) -> None:
-        ...
-
-
-class GraphicsChartWriter(DataSink):
-    def __init__(self, output_dir: str) -> None:
-        self.output_dir = output_dir
-
-    def write(self, records: List[Record]) -> None:
-        ...
-
