@@ -43,7 +43,7 @@ package "core" {
     +__init__(worker_id, raw_queue, processed_queue, config)
     +run(): None
   }
-  
+
   class Aggregator {
     -processed_queue: Queue
     -output_queue: Queue
@@ -56,3 +56,20 @@ package "core" {
     +run(): None
     +{static} compute_running_average(window: list): float
   }
+  
+  note right of Aggregator
+    Functional Core, Imperative Shell:
+    compute_running_average() is the
+    pure Functional Core (no side effects).
+    run() is the Imperative Shell
+    (manages state & queues).
+  end note
+
+  note right of CoreWorker
+    Scatter pattern:
+    N copies run in parallel,
+    all pulling from the same raw_queue.
+    verify_signature() is the
+    pure Functional Core.
+  end note
+}
