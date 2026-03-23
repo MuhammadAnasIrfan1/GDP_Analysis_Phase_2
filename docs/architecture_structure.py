@@ -92,7 +92,19 @@ class Aggregator:
         ...
 
 
-
+# ── Output (mirrors plugins/outputs.py) ───────────────────────────────────────
+ 
+class PipelineTelemetry(TelemetrySubject):
+    """Observer Pattern — Subject."""
+ 
+    def __init__(self, raw_queue: multiprocessing.Queue,
+                 processed_queue: multiprocessing.Queue,
+                 output_queue: multiprocessing.Queue, max_size: int) -> None:
+        self._raw_queue = raw_queue
+        self._processed_queue = processed_queue
+        self._output_queue = output_queue
+        self.max_size = max_size
+        self._observers: list = []
 
 
 class TransformationEngine(PipelineService):
