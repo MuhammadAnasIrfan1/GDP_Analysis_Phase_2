@@ -116,7 +116,22 @@ class PipelineTelemetry(TelemetrySubject):
  
  
 
-
+class RealtimeDashboard:
+    """Observer Pattern — Observer."""
+    SENTINEL = None
+ 
+    def __init__(self, output_queue: multiprocessing.Queue,
+                 telemetry: PipelineTelemetry, config: dict) -> None:
+        self.output_queue = output_queue
+        self.telemetry = telemetry
+        self._latest_stats: dict = {}
+ 
+    def on_telemetry_update(self, stats: dict) -> None:
+        ...
+ 
+    def run(self) -> None:
+        ...
+ 
 class TransformationEngine(PipelineService):
     def __init__(self, sink: DataSink, config: EngineConfig) -> None:
         self.sink = sink
