@@ -132,23 +132,6 @@ class RealtimeDashboard:
     def run(self) -> None:
         ...
  
-class TransformationEngine(PipelineService):
-    def __init__(self, sink: DataSink, config: EngineConfig) -> None:
-        self.sink = sink
-        self.config = config
-
-    def execute(self, raw_data: List[Any]) -> None:
-        ...
-
-
-class JsonReader:
-    def __init__(self, path: str, service: PipelineService) -> None:
-        self.path = path
-        self.service = service
-
-    def run(self) -> None:
-        ...
-
 
 class CsvReader:
     def __init__(self, path: str, service: PipelineService) -> None:
