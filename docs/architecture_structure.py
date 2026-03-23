@@ -14,6 +14,19 @@ from typing import Any, List, Protocol, runtime_checkable
  
 Record = dict[str, Any]
 
+# ── Contracts (mirrors core/contracts.py) ─────────────────────────────────────
+ 
+@runtime_checkable
+class DataSink(Protocol):
+    def write(self, key: str, data: Any) -> None:
+        ...
+ 
+ 
+@runtime_checkable
+class PipelineService(Protocol):
+    def execute(self, raw_data: List[Any]) -> None:
+        ...
+
 @runtime_checkable
 class DataSink(Protocol):
     def write(self, records: List[Record]) -> None:
