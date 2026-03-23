@@ -159,3 +159,14 @@ loop until SENTINEL received
     DASH -> DASH : break
   end
 end
+
+
+' ── 6. Shutdown ───────────────────────────────────────────────────────────────
+== 6. Shutdown ==
+
+MAIN -> INPUT : join()
+MAIN -> CORE : join() (all N workers)
+MAIN -> AGG : join()
+MAIN -> MAIN : print("[Main] Pipeline complete.")
+
+@enduml
