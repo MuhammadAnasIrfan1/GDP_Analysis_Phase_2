@@ -56,7 +56,7 @@ package "core" {
     +run(): None
     +{static} compute_running_average(window: list): float
   }
-  
+
   note right of Aggregator
     Functional Core, Imperative Shell:
     compute_running_average() is the
@@ -72,4 +72,18 @@ package "core" {
     verify_signature() is the
     pure Functional Core.
   end note
+}
+
+
+' ─────────────────────────────────────────────
+package "core::functions" {
+  class "verify_signature()" as VS <<function>> {
+    +raw_value: float
+    +signature: str
+    +secret_key: str
+    +iterations: int
+    --
+    returns bool
+    (PBKDF2-HMAC-SHA256 — pure function)
+  }
 }
