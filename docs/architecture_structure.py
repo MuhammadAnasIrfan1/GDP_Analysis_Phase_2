@@ -93,13 +93,6 @@ class Aggregator:
 
 
 
-@dataclass
-class EngineConfig:
-    continent: str
-    year: int
-    start_year: int
-    end_year: int
-    decline_years: int
 
 
 class TransformationEngine(PipelineService):
